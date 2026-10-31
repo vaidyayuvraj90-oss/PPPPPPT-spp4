@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin:0; padding:0; background:#EEF0F6; font-family: sans-serif; }
+  #bar { position:sticky; top:0; z-index:10; background:#1F2340; color:#fff;
+         display:flex; align-items:center; padding:10px 14px; gap:10px; }
+  #title { flex:1; font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  button { background:#5B6CFF; color:#fff; border:0; border-radius:8px;
+           padding:10px 16px; font-size:15px; }
+  #msg { text-align:center; color:#5A5F7A; padding:48px 24px; font-size:16px; line-height:1.5; }
+  #wrap { padding:8px 0 40px 0; }
+  .pptx-preview-wrapper { height:auto !important; overflow:visible !important; background:transparent !important; }
+  .pptx-preview-slide-wrapper { margin:0 auto 12px auto !important; box-shadow:0 1px 6px rgba(0,0,0,.25); }
+  #wrap .slide-box { margin:0 auto 12px auto; box-shadow:0 1px 6px rgba(0,0,0,.25); background:#fff; overflow:hidden; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <div id="title">PPT Opener</div>
+  <button onclick="Android.pick()">Open file</button>
+</div>
+<div id="msg">Tap <b>Open file</b> and choose a PowerPoint (.pptx) file.<br>
+<small>Internet is needed the first time to load the slide viewer.</small></div>
+<div id="wrap"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/pptx-preview@1.0.7/dist/pptx-preview.umd.js"></script>
+<script>
+  function setMsg(t) {
+    var m = document.getElementById('msg');
+    m.style.display = t ? 'block' : 'none';
+    m.innerHTML = t || '';
+  }
+
+  function b64ToBuffer(b64) {
+    var bin = atob(b64);
+    var len = bin.length;
+    var bytes = new Uint8Array(len);
+    for (var i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes.buffer;
+  }
+
+  function showError(e) {
+    setMsg('Could not show this file.<br><small>' + (e && e.message ? e.message : e) + '</small>');
+  }
+
+  function openPptx(b64, name) {
+    document.getElementById('title').textContent = name || 'Presentation';
+    var wrap = document.getElementById('wrap');
+    wrap.innerHTML = '';
+    if (typeof pptxPreview === 'undefined') {
+      setMsg('The slide viewer could not be loaded.<br>Please check your internet connection and try again.');
+      return;
+    }
+    setMsg('Opening...');
+    setTimeout(function () {
+      try {
+        var buffer = b64ToBuffer(b64);
+        var w = Math.max(280, Math.floor(window.innerWidth - 16));
+        var h = Math.round(w * 9 / 16);
+        var box = document.createElement('div');
+        wrap.appendChild(box);
+        var viewer = pptxPreview.init(box, { width: w, height: h, mode: 'list' });
+        var p = viewer.preview(buffer);
+        Promise.resolve(p).then(function () { setMsg(''); }).catch(showError);
+      } catch (e) {
+        showError(e);
+      }
+    }, 50);
+  }
+  window.openPptx = openPptx;
+</script>
+</body>
+</html>
