@@ -1,57 +1,56 @@
 package com.example.pptopener;
 
 import android.app.Activity;
-import android.content.ActivityNotFoundException;
 import android.content.Intent;
-import android.graphics.Color;
-import android.graphics.Typeface;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
-import android.view.Gravity;
-import android.widget.Button;
-import android.widget.LinearLayout;
-import android.widget.TextView;
+import android.provider.OpenableColumns;
+import android.util.Base64;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.widget.Toast;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 
 public class MainActivity extends Activity {
 
     private static final int PICK_PPT = 1001;
 
+    private WebView webView;
+    private boolean pageLoaded = false;
+    private Uri pendingUri = null;
+    private volatile String currentData = "";
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setGravity(Gravity.CENTER);
-        root.setPadding(64, 64, 64, 64);
-        root.setBackgroundColor(Color.parseColor("#F7F7FB"));
+        webView = new WebView(this);
+        setContentView(webView);
 
-        TextView title = new TextView(this);
-        title.setText("PPT Opener");
-        title.setTextSize(30);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(Color.parseColor("#1F2340"));
-        title.setGravity(Gravity.CENTER);
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setAllowFileAccess(true);
 
-        TextView hint = new TextView(this);
-        hint.setText("Pick a presentation (.ppt, .pptx, .ppsx) and open it.");
-        hint.setTextSize(16);
-        hint.setTextColor(Color.parseColor("#5A5F7A"));
-        hint.setGravity(Gravity.CENTER);
-        hint.setPadding(0, 24, 0, 48);
+        webView.addJavascriptInterface(new Bridge(), "Android");
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                pageLoaded = true;
+                if (pendingUri != null) {
+                    Uri u = pendingUri;
+                    pendingUri = null;
+                    loadPresentation(u);
+                }
+            }
+        });
+        webView.loadUrl("file:///android_asset/index.html");
 
-        Button pick = new Button(this);
-        pick.setText("Choose presentation");
-        pick.setAllCaps(false);
-        pick.setOnClickListener(v -> pickFile());
-
-        root.addView(title);
-        root.addView(hint);
-        root.addView(pick);
-        setContentView(root);
-
-        // Opened from a file manager / "Open with"
         handleIncoming(getIntent());
     }
 
@@ -64,7 +63,32 @@ public class MainActivity extends Activity {
     private void handleIncoming(Intent intent) {
         if (intent != null && Intent.ACTION_VIEW.equals(intent.getAction())
                 && intent.getData() != null) {
-            openPresentation(intent.getData(), intent.getType());
+            openUri(intent.getData());
+        }
+    }
+
+    private void openUri(Uri uri) {
+        if (pageLoaded) {
+            loadPresentation(uri);
+        } else {
+            pendingUri = uri;
+        }
+    }
+
+    public class Bridge {
+        @JavascriptInterface
+        public void pick() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    pickFile();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public String getData() {
+            return currentData;
         }
     }
 
@@ -74,8 +98,9 @@ public class MainActivity extends Activity {
         i.setType("*/*");
         i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
                 "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
                 "application/vnd.ms-powerpoint",
-                "application/vnd.openxmlformats-officedocument.presentationml.slideshow"
+                "application/octet-stream"
         });
         startActivityForResult(i, PICK_PPT);
     }
@@ -85,24 +110,75 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == PICK_PPT && resultCode == RESULT_OK && data != null
                 && data.getData() != null) {
-            Uri uri = data.getData();
-            openPresentation(uri, getContentResolver().getType(uri));
+            openUri(data.getData());
         }
     }
 
-    private void openPresentation(Uri uri, String mime) {
-        if (mime == null || mime.equals("application/octet-stream")) {
-            mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-        }
-        Intent view = new Intent(Intent.ACTION_VIEW);
-        view.setDataAndType(uri, mime);
-        view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+    private void loadPresentation(final Uri uri) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String name = queryName(uri);
+                    InputStream in = getContentResolver().openInputStream(uri);
+                    if (in == null) {
+                        throw new Exception("Could not read the file");
+                    }
+                    ByteArrayOutputStream out = new ByteArrayOutputStream();
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) != -1) {
+                        out.write(buf, 0, n);
+                    }
+                    in.close();
+
+                    currentData = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
+                    final String js = "openPptx(Android.getData(), '" + escape(name) + "')";
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            webView.evaluateJavascript(js, null);
+                        }
+                    });
+                } catch (final Exception e) {
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            Toast.makeText(MainActivity.this,
+                                    "Could not open file: " + e.getMessage(),
+                                    Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+
+    private String queryName(Uri uri) {
+        String name = "Presentation";
+        Cursor c = null;
         try {
-            startActivity(Intent.createChooser(view, "Open presentation with"));
-        } catch (ActivityNotFoundException e) {
-            Toast.makeText(this,
-                    "No app found to show presentations. Install PowerPoint, WPS Office or Google Slides.",
-                    Toast.LENGTH_LONG).show();
+            c = getContentResolver().query(uri, null, null, null, null);
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (idx >= 0) {
+                    String n = c.getString(idx);
+                    if (n != null) {
+                        name = n;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) {
+                c.close();
+            }
         }
+        return name;
+    }
+
+    private String escape(String s) {
+        return s.replace("\\", "\\\\").replace("'", "\\'")
+                .replace("\n", " ").replace("\r", " ");
     }
 }
